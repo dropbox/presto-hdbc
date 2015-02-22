@@ -31,12 +31,6 @@ data PrestoStats = PrestoStats { state :: String
                                , processedBytes :: Integer
     } deriving (Show, Generic)
 
-data PrestoColumn = PrestoColumn {
-      name :: String,
-      _type :: String
-    } deriving (Show, Generic)
-
-
 
 data AnyValue = NumValue Scientific
               | TextValue T.Text
@@ -60,6 +54,10 @@ instance ToJSON AnyValue where
 
 
 type PrestoRow = [SqlValue]
+data PrestoColumn = PrestoColumn {
+      prestoColumn_name :: String,
+      prestoColumn_type :: String
+    } deriving (Show, Generic)
 
 data PrestoResponse = PrestoResponse { id :: String
                                      , infoUri :: String

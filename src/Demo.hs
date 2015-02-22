@@ -13,11 +13,11 @@ main = do
 
   c <- connectToPresto prestoUri
 
-  select <- prepare c "SELECT * FROM customer LIMIT 10"
+  select <- prepare c "describe customer"
 
   execute select []
 
-  fetchRow select
+  -- fetchRow select
 
-  -- fetchAllRows select
+  fetchAllRows select
   -- disconnect c
