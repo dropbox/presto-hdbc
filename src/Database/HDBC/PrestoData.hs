@@ -59,7 +59,7 @@ data PrestoColumn = PrestoColumn {
       prestoColumn_type :: String
     } deriving (Show, Generic)
 
-data PrestoResponse = PrestoResponse { id :: String
+data PrestoResponse = PrestoResponse { response_id :: String
                                      , infoUri :: String
                                      , nextUri :: String
                                      , stats :: PrestoStats

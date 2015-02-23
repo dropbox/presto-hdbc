@@ -3,36 +3,37 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Database.HDBC.Presto where
 
-import Network.HTTP
-import Network.HTTP.Base
-import Network.HTTP.Headers
+-- import Network.HTTP (simpleHTTP, getResponseBody)
+-- import Network.HTTP.Base
+-- import Network.HTTP.Headers
 import Network.URI
 
-import Network.Stream
-
-import Data.Maybe
-
 import qualified Data.ByteString.Lazy as B
+import qualified Data.ByteString as BN
 
-import Control.Monad
+import Data.Convertible
+import Data.Maybe
+import GHC.Word (Word16)
+
 import Control.Monad.Trans
-import Control.Monad.Trans.Class
 import Control.Monad.Trans.Either
-import Control.Error.Util
 
 import Database.HDBC.PrestoData
 import Data.Aeson
 
 import Control.Concurrent (threadDelay)
 
+import Safe (readMay)
+
+import Control.Applicative ((<$>))
+
 -- TODO: remove
-import System.IO.Unsafe (unsafePerformIO)
-import Debug.Trace
+import System.IO.Error
 import Data.Either.Unwrap
 
 import Data.Text.Lazy as T
 import Data.Text.Lazy.Encoding (encodeUtf8)
--- import qualified Data.ByteString.Lazy.Char8 as BC
+import qualified Data.Text.Encoding as DE
 
 -- HDBC stuff
 import Database.HDBC (IConnection(..), SqlValue, fetchAllRows)
@@ -40,7 +41,14 @@ import Database.HDBC.Statement (Statement(..))
 import Database.HDBC.SqlValue
 import Database.HDBC.ColTypes as CT
 
+import qualified System.IO.Streams as Streams
+import Network.Http.Client
+
 import Control.Concurrent.MVar(MVar, readMVar, modifyMVar, modifyMVar_, newMVar, withMVar, isEmptyMVar)
+
+-- TODO: move to utility library or find in real library
+maybeToEither = flip maybe Right . Left
+maybeToEitherT x y = hoistEither $ maybeToEither x y
 
 instance IConnection PrestoConnection where
     disconnect = disconnectPresto
@@ -57,7 +65,7 @@ instance IConnection PrestoConnection where
     dbTransactionSupport _ = False
     getTables conn = do
       showTables <- prepare conn "show tables"
-      execute showTables []
+      _ <- execute showTables []
       rows <- fetchAllRows showTables
       -- Each row should be a single string
       return $ fmap ((\(SqlString s) -> s) . Prelude.head) rows
@@ -100,20 +108,26 @@ columnsFromStatement statement = case statement of
                                    _ -> fail "You have to call execute before getting column names"
 
 -- Store the uri in here for now
-data PrestoConnection = PrestoConnection URI (HandleStream String)
+data PrestoConnection = PrestoConnection URI Connection
 
 data PrestoStatement = PrestoStatement StmtState PrestoConnection Text
 
-connectToPresto :: URI -> IO PrestoConnection
-connectToPresto uri = do
-  -- stream <- openTCPConnection (uriToString Prelude.id uri "") 5096
-  return $ PrestoConnection uri undefined
+connectToPresto :: URI -> IO (Either Text PrestoConnection)
+connectToPresto uri = runEitherT $ do
+  auth <- maybeToEitherT "URI didn't contain authority" $ uriAuthority uri
+  port <- maybeToEitherT "Couldn't read port from URI" $ readMay $ Prelude.tail $ uriPort auth
 
-finishPresto = undefined
+  let uriStr = DE.encodeUtf8 $ convert $ uriToString id uri ("" :: String)
+
+  eitherConn <- liftIO $ tryIOError $ openConnection "localhost" port
+
+  conn <- hoistEither $ mapLeft (convert . show) eitherConn
+
+  return $ PrestoConnection uri conn
+
 
 fetchPrestoRow :: PrestoConnection -> MVar PrestoStatement -> IO (Maybe [SqlValue])
-fetchPrestoRow conn prestoStatementVar = do
-  modifyMVar prestoStatementVar fetch where
+fetchPrestoRow conn prestoStatementVar = modifyMVar prestoStatementVar fetch where
     fetch (PrestoStatement Prepared _ _) = fail "Trying to fetch before executing statement."
 
     fetch statement@(PrestoStatement (Executed _ []) conn query) = do
@@ -131,8 +145,8 @@ fetchPrestoRow conn prestoStatementVar = do
 
 executePresto conn prestoStatementVar vals = modifyMVar prestoStatementVar exec where
     exec stmt@(PrestoStatement (Executed _ _) _ _) = return (stmt, 0)
-    exec (PrestoStatement Prepared (PrestoConnection uri _) query) = do
-      result <- doPollingPrestoQuery uri query
+    exec (PrestoStatement Prepared (PrestoConnection uri httpConn) query) = do
+      result <- doPollingPrestoQuery httpConn uri query
       let newStatement = case result of
                           Left msg -> PrestoStatement (Errored msg) conn query -- TODO: throw SqlError? (check if this should happen on HDBC execute)
                           Right (columns, rows) -> PrestoStatement (Executed columns rows) conn query
@@ -158,8 +172,6 @@ preparePresto conn query = do
         prestoStatement <- readMVar prestoStatementVar
         let columns = columnsFromStatement prestoStatement
 
-        putStrLn $ "Got columns result: " ++ show columns
-
         return $ (flip fmap) columns (\column -> (prestoColumn_name column, SqlColDesc {
                                                                           colType = prestoTypeToSqlColType $ prestoColumn_type column,
                                                                           colSize = Nothing,
@@ -173,9 +185,62 @@ disconnectPresto :: PrestoConnection -> IO ()
 disconnectPresto conn = return ()
 -- TODO: the JDBC version seems to do a DELETE when you close the StatementClient
 
----------------------------------------------------------------
-------------------- Private, non-HDBC stuff -------------------
----------------------------------------------------------------
+------------------- Connection and polling stuff -------------------
+
+getPrestoResponse :: Connection -> URI -> Method -> B.ByteString -> EitherT String IO BN.ByteString
+getPrestoResponse conn uri method body = do
+  request <- liftIO $ buildRequest $ do
+    http method (DE.encodeUtf8 $ convert $ uriPath uri)
+    setContentType "text/plain"
+    setAccept "*/*"
+    setHeader "X-Presto-User" "presto"
+    setHeader "X-Presto-Catalog" "tpch"
+    setHeader "X-Presto-Schema" "tiny"
+
+  bodyStream <- liftIO $ Streams.fromByteString $ convert body
+  liftIO $ sendRequest conn request $ inputStreamBody bodyStream
+
+  maybeBytes <- liftIO $ receiveResponse conn (\p i -> Streams.read i)
+
+  maybeToEitherT "Failed to get bytes" maybeBytes
+
+
+pollForResult :: Connection -> URI -> Int -> EitherT String IO ([PrestoColumn], [[SqlValue]])
+pollForResult conn uri attemptNo = do
+  liftIO $ threadDelay (attemptNo * 100000) -- Increase backoff in increments of 100ms = 100000 us
+  body <- getPrestoResponse conn uri GET B.empty
+
+  response <- maybeToEitherT "Parse error of polling Presto response" (decode $ convert body)
+
+  case _data response of
+    Nothing -> do
+      newUri <- case parseAbsoluteURI $ nextUri response of
+               Nothing -> left "Failed to parse nextUri"
+               Just newUri -> right newUri
+      pollForResult conn newUri (attemptNo + 1)
+
+    Just dat -> case columns response of
+                  Nothing -> left "Data but no columns found in response"
+                  Just cols -> right (cols, fmap (makeSqlValues cols) dat)
+
+
+initialUri = fromJust $ parseRelativeReference "/v1/statement"
+
+doPollingPrestoQuery :: Connection -> URI -> T.Text -> IO (Either String ([PrestoColumn], [PrestoRow]))
+doPollingPrestoQuery conn _ q = runEitherT $ do
+  body <- getPrestoResponse conn initialUri POST (encodeUtf8 q)
+
+  initialResponse <- maybeToEitherT ("Parse error of initial Presto response: " ++ show body) $ decode (convert body)
+
+  newUri <- case parseAbsoluteURI $ nextUri initialResponse of
+             Nothing -> left "Failed to parse nextUri"
+             Just newUri -> right newUri
+
+  pollForResult conn newUri 0
+
+
+------------------- SQL stuff -------------------
+
 
 prestoTypeToSqlColType :: String -> CT.SqlTypeId
 prestoTypeToSqlColType prestoType = case prestoType of
@@ -192,32 +257,6 @@ prestoTypeToSqlColType prestoType = case prestoType of
                                       "interval_year_to_second" -> error "Can't represent year to second as SqlTypeId (?)"
 
 
-buildPrestoRequest :: URI -> RequestMethod -> B.ByteString -> Request B.ByteString
-buildPrestoRequest uri method s = Request uri method headers s where
-    headers = [mkHeader HdrContentType "text/plain",
-               mkHeader HdrAccept "*/*",
-               mkHeader (HdrCustom "X-Presto-User") "presto",
-               mkHeader (HdrCustom "X-Presto-Catalog") "tpch",
-               mkHeader (HdrCustom "X-Presto-Schema") "tiny",
-               mkHeader HdrContentLength $ show $ B.length s]
-
-
-getPrestoResponseBody request = do result <- lift $ simpleHTTP request
-                                   case result of
-                                     Left ErrorClosed -> left "Network connection closed"
-                                     Left ErrorReset -> left "Network connection reset"
-                                     Left (ErrorParse s) -> left s
-                                     Left (ErrorMisc s) -> left s
-                                     Right r -> lift $ getResponseBody result
-
-initialQuery :: URI -> T.Text -> IO (Either String PrestoResponse)
-initialQuery uri q = runEitherT $ do
-  body <- getPrestoResponseBody $ buildPrestoRequest uri POST $ encodeUtf8 q
-
-  case (decode body) :: Maybe PrestoResponse of
-   Nothing -> left $ "Parse error of initial Presto response" ++ (show body)
-   Just r -> right r
-
 makeSqlValue :: PrestoColumn -> AnyValue -> SqlValue
 makeSqlValue column value = case (prestoColumn_type column, value) of
                              ("varchar", TextValue t) -> SqlString $ T.unpack $ T.fromStrict t
@@ -228,34 +267,3 @@ makeSqlValue column value = case (prestoColumn_type column, value) of
 
 makeSqlValues :: [PrestoColumn] -> [AnyValue] -> [SqlValue]
 makeSqlValues columns strings = [makeSqlValue column string | (column, string) <- Prelude.zip columns strings]
-
-pollForResult :: URI -> Int -> EitherT String IO ([PrestoColumn], [[SqlValue]])
-pollForResult uri attemptNo = do
-  liftIO $ threadDelay (attemptNo * 100000) -- Increase backoff in increments of 100ms = 100000 us
-  body <- getPrestoResponseBody $ buildPrestoRequest uri GET $ B.empty
-
-  response <- case (decode body) :: Maybe PrestoResponse of
-    Nothing -> left $ "Parse error of polling Presto response" ++ (show body)
-    Just r -> right r
-
-  case _data response of
-    Nothing -> do
-      uri <- case parseAbsoluteURI $ nextUri response of
-               Nothing -> left "Failed to parse nextUri"
-               Just uri -> right uri
-      pollForResult uri (attemptNo + 1)
-
-    Just dat -> case columns response of
-                  Nothing -> left "Data but no columns found in response"
-                  Just cols -> right (cols, fmap (makeSqlValues cols) dat)
-
-
-doPollingPrestoQuery :: URI -> T.Text -> IO (Either String ([PrestoColumn], [PrestoRow]))
-doPollingPrestoQuery uri q = runEitherT $ do
-  initialResponse <- EitherT $ initialQuery uri q
-
-  uri <- case parseAbsoluteURI $ nextUri initialResponse of
-          Nothing -> left "Failed to parse nextUri"
-          Just uri -> right uri
-
-  pollForResult uri 0
