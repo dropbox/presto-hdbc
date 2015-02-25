@@ -210,7 +210,7 @@ pollForResult conn uri attemptNo = do
   liftIO $ threadDelay (attemptNo * 100000) -- Increase backoff in increments of 100ms = 100000 us
   body <- getPrestoResponse conn uri GET B.empty
 
-  response <- maybeToEitherT "Parse error of polling Presto response" (decode $ convert body)
+  response <- maybeToEitherT ("Parse error of polling Presto response: " ++ show body) (decode $ convert body)
 
   case _data response of
     Nothing -> do
