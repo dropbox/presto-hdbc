@@ -61,7 +61,7 @@ data PrestoColumn = PrestoColumn {
 
 data PrestoResponse = PrestoResponse { response_id :: String
                                      , infoUri :: String
-                                     , nextUri :: String
+                                     , nextUri :: Maybe String
                                      , stats :: PrestoStats
 
                                      , columns :: Maybe [PrestoColumn]

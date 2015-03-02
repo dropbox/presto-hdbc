@@ -14,6 +14,7 @@ import Data.Convertible
 import Data.Maybe
 import GHC.Word (Word16)
 
+import Control.Monad (when)
 import Control.Monad.Trans
 import Control.Monad.Trans.Either
 
@@ -213,7 +214,8 @@ pollForResult conn uri attemptNo = do
 
   case _data response of
     Nothing -> do
-      newUri <- case parseAbsoluteURI $ nextUri response of
+      when (isNothing $ nextUri response) $ left "No data and no nextUri!"
+      newUri <- case parseAbsoluteURI $ fromJust $ nextUri response of
                Nothing -> left "Failed to parse nextUri"
                Just newUri -> right newUri
       pollForResult conn newUri (attemptNo + 1)
@@ -231,7 +233,9 @@ doPollingPrestoQuery conn _ q = runEitherT $ do
 
   initialResponse <- maybeToEitherT ("Parse error of initial Presto response: " ++ show body) $ decode (convert body)
 
-  newUri <- case parseAbsoluteURI $ nextUri initialResponse of
+  uri <- maybeToEitherT "No nextUri found in initialResponse" $ nextUri initialResponse
+
+  newUri <- case parseAbsoluteURI uri of
              Nothing -> left "Failed to parse nextUri"
              Just newUri -> right newUri
 
