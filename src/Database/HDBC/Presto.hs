@@ -1,5 +1,4 @@
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Database.HDBC.Presto where
 
@@ -200,7 +199,7 @@ getPrestoResponse conn uri method body = do
   bodyStream <- liftIO $ Streams.fromByteString $ convert body
   liftIO $ sendRequest conn request $ inputStreamBody bodyStream
 
-  maybeBytes <- liftIO $ receiveResponse conn (\p i -> Streams.read i)
+  maybeBytes <- liftIO $ receiveResponse conn (\_ i -> Streams.read i)
 
   maybeToEitherT "Failed to get bytes" maybeBytes
 
@@ -210,7 +209,7 @@ pollForResult conn uri attemptNo = do
   liftIO $ threadDelay (attemptNo * 100000) -- Increase backoff in increments of 100ms = 100000 us
   body <- getPrestoResponse conn uri GET B.empty
 
-  response <- maybeToEitherT ("Parse error of polling Presto response: " ++ show body) (decode $ convert body)
+  response <- hoistEither $ mapLeft (\x -> "Presto polling response parse error: " ++ x) $ eitherDecode $ convert body
 
   case _data response of
     Nothing -> do
