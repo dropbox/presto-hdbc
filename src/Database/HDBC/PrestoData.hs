@@ -2,20 +2,14 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Database.HDBC.PrestoData where
 
-import Data.Aeson
-import GHC.Generics
--- For pretty-printing
-import Data.Aeson.Encode.Pretty
-
-import Util.JSONConventions
-import Data.Aeson.TH
-
 import Control.Monad
-import Data.Text as T
-
+import Data.Aeson
+import Data.Aeson.TH
 import Data.Scientific
-
+import Data.Text as T
 import Database.HDBC (SqlValue)
+import GHC.Generics
+import Util.JSONConventions
 
 data PrestoStats = PrestoStats { state :: String
                                , scheduled :: Bool

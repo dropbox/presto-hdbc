@@ -2,49 +2,36 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Database.HDBC.Presto where
 
--- import Network.HTTP (simpleHTTP, getResponseBody)
--- import Network.HTTP.Base
--- import Network.HTTP.Headers
-import Network.URI
-
-import qualified Data.ByteString.Lazy as B
-import qualified Data.ByteString as BN
-
-import Data.Convertible
-import Data.Maybe
-import GHC.Word (Word16)
-
+import Control.Applicative ((<$>))
+import Control.Concurrent (threadDelay)
 import Control.Monad (when)
 import Control.Monad.Trans
 import Control.Monad.Trans.Either
-
-import Database.HDBC.PrestoData
 import Data.Aeson
-
-import Control.Concurrent (threadDelay)
-
+import qualified Data.ByteString as BN
+import qualified Data.ByteString.Lazy as B
+import Data.Convertible
+import Data.Maybe
+import Database.HDBC.PrestoData
+import GHC.Word (Word16)
+import Network.URI
 import Safe (readMay)
 
-import Control.Applicative ((<$>))
-
 -- TODO: remove
-import System.IO.Error
 import Data.Either.Unwrap
-
+import qualified Data.Text.Encoding as DE
 import Data.Text.Lazy as T
 import Data.Text.Lazy.Encoding (encodeUtf8)
-import qualified Data.Text.Encoding as DE
+import System.IO.Error
 
 -- HDBC stuff
-import Database.HDBC (IConnection(..), SqlValue, fetchAllRows)
-import Database.HDBC.Statement (Statement(..))
-import Database.HDBC.SqlValue
-import Database.HDBC.ColTypes as CT
-
-import qualified System.IO.Streams as Streams
-import Network.Http.Client
-
 import Control.Concurrent.MVar(MVar, readMVar, modifyMVar, modifyMVar_, newMVar, withMVar, isEmptyMVar)
+import Database.HDBC (IConnection(..), SqlValue, fetchAllRows)
+import Database.HDBC.ColTypes as CT
+import Database.HDBC.SqlValue
+import Database.HDBC.Statement (Statement(..))
+import Network.Http.Client
+import qualified System.IO.Streams as Streams
 
 -- TODO: move to utility library or find in real library
 maybeToEither = flip maybe Right . Left
