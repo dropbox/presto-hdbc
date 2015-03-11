@@ -1,9 +1,11 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Database.HDBC.Presto (PrestoConnection(..), connectToPresto) where
 
 import Control.Applicative ((<$>))
 import Control.Concurrent (threadDelay)
+import Control.Exception (throw)
 import Control.Monad (when)
 import Control.Monad.Trans
 import Control.Monad.Trans.Either
@@ -27,7 +29,7 @@ import System.IO.Error
 
 -- HDBC stuff
 import Control.Concurrent.MVar(MVar, readMVar, modifyMVar, modifyMVar_, newMVar, withMVar, isEmptyMVar)
-import Database.HDBC (IConnection(..), SqlValue, fetchAllRows)
+import Database.HDBC (IConnection(..), SqlValue, fetchAllRows, SqlError(..))
 import Database.HDBC.ColTypes as CT
 import Database.HDBC.SqlValue
 import Database.HDBC.Statement (Statement(..))
@@ -125,16 +127,16 @@ fetchPrestoRow conn prestoStatementVar = modifyMVar prestoStatementVar fetch whe
       let newStatement = PrestoStatement (Executed cols remainder) conn query
       return (newStatement, Just row)
 
-    fetch (PrestoStatement (Errored msg) _ _) = fail $ "Query failed: " ++ msg -- TODO: throw SqlError
+    fetch (PrestoStatement (Errored msg) _ _) = throw $ SqlError "Query failed" 0 msg
 
-    fetch (PrestoStatement Finished _ _ ) = fail "Can't execute an already finished statement."
+    fetch (PrestoStatement Finished _ _ ) = throw $ SqlError "Can't execute an already executed statement." 0 ""
 
 executePresto conn prestoStatementVar vals = modifyMVar prestoStatementVar exec where
     exec stmt@(PrestoStatement (Executed _ _) _ _) = return (stmt, 0)
     exec (PrestoStatement Prepared (PrestoConnection uri httpConn _ _) query) = do
       result <- doPollingPrestoQuery httpConn conn uri query
       let newStatement = case result of
-                          Left msg -> PrestoStatement (Errored msg) conn query -- TODO: throw SqlError? (check if this should happen on HDBC execute)
+                          Left msg -> throw $ SqlError "Query failed" 0 msg
                           Right (columns, rows) -> PrestoStatement (Executed columns rows) conn query
       return (newStatement, 0)
 
@@ -202,7 +204,10 @@ pollForResult conn prestoConn uri attemptNo = do
 
   case _data response of
     Nothing -> do
-      when (isNothing $ nextUri response) $ left $ "No data and no nextUri: " ++ show response
+      when (isNothing $ nextUri response) $ do
+        iUri <- hoistEither $ maybeToEither "No data or nextUri and couldn't parse infoUri" $ parseAbsoluteURI (infoUri response)
+        info :: PrestoInfo <- getPrestoResponse conn prestoConn iUri GET B.empty
+        left $ "No data and no nextUri: " ++ show response ++ "\n\n" ++ "Info: " ++ show info
       newUri <- case parseAbsoluteURI $ fromJust $ nextUri response of
                Nothing -> left "Failed to parse nextUri"
                Just newUri -> right newUri
@@ -252,6 +257,7 @@ makeSqlValue column value = case (prestoColumn_type column, value) of
                              ("double", NumValue s) -> SqlDouble (realToFrac s)
                              ("bigint", NumValue s) -> SqlInteger $ floor $ realToFrac s
                              ("boolean", BoolValue b) -> SqlBool b
+                             (_, NullValue) -> SqlNull
                              _ -> error $ "Unrecognized Presto column type: " ++ (prestoColumn_type column)
 
 makeSqlValues :: [PrestoColumn] -> [AnyValue] -> [SqlValue]
