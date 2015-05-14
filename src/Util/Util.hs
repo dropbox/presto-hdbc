@@ -13,7 +13,7 @@ maybeToEither :: e -> Maybe v -> Either e v
 maybeToEither _ (Just x) = Right x
 maybeToEither e Nothing  = Left e
 
-ioEither :: IO (Either l r) -> EitherT l IO r
+ioEither :: (Monad m) => m (Either l r) -> EitherT l m r
 ioEither action = do
-  result <- liftIO action
+  result <- lift action
   hoistEither result
