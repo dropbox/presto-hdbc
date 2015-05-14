@@ -36,9 +36,7 @@ import Database.HDBC.Statement (Statement(..))
 import Network.Http.Client
 import qualified System.IO.Streams as Streams
 
--- TODO: move to utility library or find in real library
-maybeToEither = flip maybe Right . Left
-maybeToEitherT x y = hoistEither $ maybeToEither x y
+import Util
 
 instance IConnection PrestoConnection where
     disconnect = disconnectPresto

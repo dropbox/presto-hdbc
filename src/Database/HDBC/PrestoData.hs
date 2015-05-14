@@ -9,7 +9,7 @@ import Data.Scientific
 import Data.Text as T
 import Database.HDBC (SqlValue)
 import GHC.Generics
-import Util.JSONConventions
+import JSONConventions
 
 data PrestoStats = PrestoStats { state :: String
                                , scheduled :: Bool

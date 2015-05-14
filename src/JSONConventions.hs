@@ -1,7 +1,7 @@
-module Util.JSONConventions where
+module JSONConventions where
 
-import Data.Aeson.TH (Options(..), SumEncoding(..), defaultOptions)
 import Control.Lens ((%~), _head)
+import Data.Aeson.TH (Options(..), SumEncoding(..), defaultOptions)
 import Data.Char (toLower)
 
 jsonOptions = defaultOptions { constructorTagModifier = _head %~ toLower

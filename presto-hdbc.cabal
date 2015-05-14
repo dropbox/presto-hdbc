@@ -11,7 +11,7 @@ name:                presto-hdbc
 -- PVP summary:      +-+------- breaking API changes
 --                   | | +----- non-breaking API additions
 --                   | | | +--- code changes with no API change
-version:             0.1.0.1
+version:             0.1.0.2
 
 -- A short (one-line) description of the package.
 synopsis:            An HDBC connector for Presto
@@ -55,7 +55,7 @@ library
   exposed-modules: Database.HDBC.Presto
 
   -- Modules included in this library but not exported.
-  other-modules: Database.HDBC.PrestoData
+  other-modules: Database.HDBC.PrestoData, Util, JSONConventions
 
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:
